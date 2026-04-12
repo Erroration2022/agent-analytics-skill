@@ -22,7 +22,7 @@ WITH llm_responses AS (
     CAST(JSON_VALUE(latency_ms, '$.time_to_first_token_ms')            AS FLOAT64) AS ttft_ms,
     status,
     error_message
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type = 'LLM_RESPONSE'
     AND timestamp BETWEEN @start AND @end
 )

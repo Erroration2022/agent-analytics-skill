@@ -15,6 +15,6 @@ SELECT
   CAST(JSON_VALUE(latency_ms, '$.total_ms') AS FLOAT64) AS latency_ms,
   status,
   error_message
-FROM `{PROJECT}.{DATASET}.agent_events`
+FROM `{PROJECT}.{DATASET}.{TABLE}`
 WHERE trace_id = @trace_id
 ORDER BY timestamp ASC;

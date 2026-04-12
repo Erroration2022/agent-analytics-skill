@@ -16,7 +16,7 @@ WITH sessions AS (
     COUNTIF(status = 'ERROR')                                   AS error_count,
     COUNT(DISTINCT agent)                                       AS agents_involved,
     COUNT(DISTINCT invocation_id)                                AS invocation_count
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE timestamp BETWEEN @start AND @end
   GROUP BY session_id, user_id
 )

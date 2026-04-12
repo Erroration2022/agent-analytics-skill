@@ -10,7 +10,7 @@ WITH llm_responses AS (
     CAST(JSON_VALUE(attributes, '$.usage_metadata.prompt_tokens')     AS INT64) AS prompt_tokens,
     CAST(JSON_VALUE(attributes, '$.usage_metadata.completion_tokens') AS INT64) AS completion_tokens,
     CAST(JSON_VALUE(attributes, '$.usage_metadata.total_tokens')      AS INT64) AS total_tokens
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type = 'LLM_RESPONSE'
     AND timestamp BETWEEN @start AND @end
 )

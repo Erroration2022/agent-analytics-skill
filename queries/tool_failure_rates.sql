@@ -8,7 +8,7 @@ WITH tool_calls AS (
     JSON_VALUE(content, '$.tool_origin') AS tool_origin,
     CAST(JSON_VALUE(latency_ms, '$.total_ms') AS FLOAT64) AS tool_latency_ms,
     status
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type = 'TOOL_COMPLETED'
     AND timestamp BETWEEN @start AND @end
 )

@@ -10,7 +10,7 @@ WITH llm_responses AS (
     JSON_VALUE(attributes, '$.model')                                       AS model_id,
     CAST(JSON_VALUE(latency_ms, '$.total_ms')              AS FLOAT64)      AS total_latency_ms,
     CAST(JSON_VALUE(latency_ms, '$.time_to_first_token_ms') AS FLOAT64)     AS ttft_ms
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type = 'LLM_RESPONSE'
     AND timestamp BETWEEN @start AND @end
 )

@@ -8,8 +8,8 @@ WITH agent_tree AS (
     a.trace_id,
     a.agent   AS child_agent,
     b.agent   AS parent_agent
-  FROM `{PROJECT}.{DATASET}.agent_events` a
-  INNER JOIN `{PROJECT}.{DATASET}.agent_events` b
+  FROM `{PROJECT}.{DATASET}.{TABLE}` a
+  INNER JOIN `{PROJECT}.{DATASET}.{TABLE}` b
     ON  a.parent_span_id = b.span_id
     AND a.trace_id       = b.trace_id
   WHERE a.timestamp BETWEEN @start AND @end

@@ -11,7 +11,7 @@ WITH hitl_requests AS (
     trace_id,
     event_type,
     timestamp AS request_time
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type IN (
     'HITL_CREDENTIAL_REQUEST',
     'HITL_CONFIRMATION_REQUEST',
@@ -25,7 +25,7 @@ hitl_completions AS (
     invocation_id,
     event_type,
     timestamp AS completion_time
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type IN (
     'HITL_CREDENTIAL_REQUEST_COMPLETED',
     'HITL_INPUT_REQUEST_COMPLETED'

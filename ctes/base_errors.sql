@@ -16,7 +16,7 @@ WITH errors AS (
     attributes,
     latency_ms,
     error_message
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE status = 'ERROR'
     AND timestamp BETWEEN @start AND @end
 )

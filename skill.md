@@ -8,11 +8,15 @@ BigQuery Agent Analytics (BQAA) data.
 
 ## Config
 
-Replace these placeholders in all queries before execution:
+All placeholders are auto-injected by `scripts/run_bq.py` from environment
+variables. The LLM should write SQL using these placeholders as-is:
 
 - `{PROJECT}` — GCP project ID (env var: `GCP_PROJECT_ID`)
 - `{DATASET}` — BigQuery dataset name (env var: `BQ_DATASET`)
-- Table is always `agent_events`
+- `{TABLE}` — Table name (env var: `BQ_TABLE`, default: `agent_events`)
+
+DO NOT ask the user for project ID, dataset, or table name. The execution
+helper reads them from environment variables automatically.
 
 ---
 
@@ -24,14 +28,36 @@ ALWAYS execute BigQuery queries using the helper script:
 python scripts/run_bq.py "SELECT ..."
 ```
 
-Never use `bq query` directly. The helper handles auth, output formatting,
-and enforces a byte-scan safety limit (default 1 GB).
+The helper automatically replaces `{PROJECT}`, `{DATASET}`, and `{TABLE}`
+in your SQL with the user's configured values from environment variables.
+Never use `bq query` directly.
+
+### CRITICAL: Dry-Run Cost Check
+
+**Before running ANY query, you MUST execute a dry-run first:**
+
+```bash
+python scripts/run_bq.py --dry-run "YOUR_SQL"
+```
+
+This returns the estimated bytes scanned without executing the query.
+**If the estimated data scanned exceeds 1 GB, you MUST refine your query
+before executing** (e.g., add a tighter date filter, remove unnecessary
+columns, add LIMIT). Only proceed with the actual query after the dry-run
+confirms the scan is under the limit.
+
+Example dry-run output:
+```json
+{"dry_run": true, "total_bytes_processed": 524288000, "human_readable": "500.00 MB", "exceeds_limit": false, "limit_gb": 1}
+```
+
+If `exceeds_limit` is `true`, do NOT execute. Refine and re-check.
 
 ---
 
 ## 2. Schema Reference
 
-Single event-sourced table: `{PROJECT}.{DATASET}.agent_events`
+Single event-sourced table: `{PROJECT}.{DATASET}.{TABLE}`
 
 | Column         | Type            | Notes                                                         |
 |----------------|-----------------|---------------------------------------------------------------|
@@ -125,7 +151,7 @@ WITH llm_responses AS (
     CAST(JSON_VALUE(latency_ms, '$.time_to_first_token_ms')            AS FLOAT64) AS ttft_ms,
     status,
     error_message
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type = 'LLM_RESPONSE'
     AND timestamp BETWEEN @start AND @end
 )
@@ -151,7 +177,7 @@ WITH tool_calls AS (
     CAST(JSON_VALUE(latency_ms, '$.total_ms') AS FLOAT64)  AS tool_latency_ms,
     status,
     error_message
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type = 'TOOL_COMPLETED'
     AND timestamp BETWEEN @start AND @end
 )
@@ -176,7 +202,7 @@ WITH errors AS (
     attributes,
     latency_ms,
     error_message
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE status = 'ERROR'
     AND timestamp BETWEEN @start AND @end
 )
@@ -200,7 +226,7 @@ WITH sessions AS (
     COUNTIF(status = 'ERROR')                                   AS error_count,
     COUNT(DISTINCT agent)                                       AS agents_involved,
     COUNT(DISTINCT invocation_id)                                AS invocation_count
-  FROM `{PROJECT}.{DATASET}.agent_events`
+  FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE timestamp BETWEEN @start AND @end
   GROUP BY session_id, user_id
 )
@@ -221,8 +247,8 @@ WITH agent_tree AS (
     b.span_id            AS parent_span,
     b.agent              AS parent_agent,
     b.event_type         AS parent_event
-  FROM `{PROJECT}.{DATASET}.agent_events` a
-  LEFT JOIN `{PROJECT}.{DATASET}.agent_events` b
+  FROM `{PROJECT}.{DATASET}.{TABLE}` a
+  LEFT JOIN `{PROJECT}.{DATASET}.{TABLE}` b
     ON  a.parent_span_id = b.span_id
     AND a.trace_id       = b.trace_id
   WHERE a.timestamp BETWEEN @start AND @end
@@ -257,7 +283,7 @@ SELECT
   APPROX_QUANTILES(
     CAST(JSON_VALUE(latency_ms, '$.total_ms') AS FLOAT64), 100
   )[OFFSET(95)]                                                   AS p95_latency_ms
-FROM `{PROJECT}.{DATASET}.agent_events`
+FROM `{PROJECT}.{DATASET}.{TABLE}`
 WHERE timestamp BETWEEN @start AND @end
 ```
 
@@ -269,9 +295,9 @@ If Step 1 shows no issues, tell the user and stop.
 ### Step 2: Filter
 
 Isolate the top 3 contributors to the issue. Use the appropriate CTE:
-- Token/latency questions → `llm_responses` CTE
-- Tool failure questions → `tool_calls` CTE
-- Error investigations → `errors` CTE
+- Token/latency questions -> `llm_responses` CTE
+- Tool failure questions -> `tool_calls` CTE
+- Error investigations -> `errors` CTE
 
 ```sql
 -- Example: top 3 error contributors
@@ -279,7 +305,7 @@ SELECT agent, event_type,
   COUNT(*) AS total,
   COUNTIF(status = 'ERROR') AS failures,
   ROUND(COUNTIF(status = 'ERROR') / COUNT(*) * 100, 2) AS fail_rate_pct
-FROM `{PROJECT}.{DATASET}.agent_events`
+FROM `{PROJECT}.{DATASET}.{TABLE}`
 WHERE timestamp BETWEEN @start AND @end
 GROUP BY agent, event_type
 ORDER BY failures DESC
@@ -296,7 +322,7 @@ offender. Show the user the actual event sequence so they can see the payload.
 ```sql
 SELECT timestamp, event_type, agent, content, attributes,
        latency_ms, status, error_message
-FROM `{PROJECT}.{DATASET}.agent_events`
+FROM `{PROJECT}.{DATASET}.{TABLE}`
 WHERE trace_id = @problematic_trace_id
 ORDER BY timestamp ASC
 ```
@@ -329,17 +355,54 @@ Say: "This matches pattern: [X]. Recommended next step: [Y]."
 
 ---
 
-## 6. Output Format
+## 6. Visualization Rules
 
-- **Survey** → single summary line with key numbers
-- **Filter** → markdown table, max 3 rows, sorted by problem metric
-- **Deep Dive** → full trace in a code block + plain-english walkthrough
+Always match query output to the correct visualization format:
+
+| CTE / Query Used | Required Output Format |
+|-----------------|----------------------|
+| `agent_tree` / `agent_delegation_map.sql` | ALWAYS render as a **Mermaid.js `sequenceDiagram`** showing agent-to-agent delegation flows. Example below. |
+| `model_comparison.sql` | ALWAYS output as a **Markdown table sorted by `avg_latency_ms` descending**. |
+| `session_cost_estimate.sql` | ALWAYS output as a **Markdown table sorted by `est_total_cost_usd` descending**. |
+| `latency_analysis.sql` | ALWAYS output as a **Markdown table** with p50 and p95 columns highlighted. |
+| `tool_failure_rates.sql` | ALWAYS output as a **Markdown table sorted by `fail_rate_pct` descending**. Flag any row with fail_rate > 5% using a warning prefix. |
+| Survey (Step 1) | Single summary line. |
+| Deep Dive (Step 3) | Chronological code block + plain-english walkthrough. |
+
+### Mermaid.js example for agent_tree results:
+
+When `agent_tree` or `agent_delegation_map.sql` returns results, render like this:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant OrchestratorAgent
+    participant SearchAgent
+    participant SummaryAgent
+
+    User->>OrchestratorAgent: user query
+    OrchestratorAgent->>SearchAgent: delegate search (142 calls)
+    SearchAgent-->>OrchestratorAgent: search results
+    OrchestratorAgent->>SummaryAgent: delegate summarization (87 calls)
+    SummaryAgent-->>OrchestratorAgent: summary
+    OrchestratorAgent-->>User: final response
+```
+
+Replace agent names and call counts with actual query results.
+
+---
+
+## 7. Output Format
+
+- **Survey** -> single summary line with key numbers
+- **Filter** -> markdown table, max 3 rows, sorted by problem metric
+- **Deep Dive** -> full trace in a code block + plain-english walkthrough
 - **Always end with:** which failure pattern matched + recommended next action
 - If no pattern matches, say so and suggest what additional data to collect
 
 ---
 
-## 7. Query Library Reference
+## 8. Query Library Reference
 
 Pre-built queries are available in the `queries/` directory:
 
@@ -354,5 +417,96 @@ Pre-built queries are available in the `queries/` directory:
 | `model_comparison.sql` | Latency, tokens, and error rates across models |
 | `session_cost_estimate.sql` | Per-session token usage and estimated cost in USD |
 
-You may use these queries directly or adapt them. Always replace `{PROJECT}`
-and `{DATASET}` placeholders before execution.
+Placeholders `{PROJECT}`, `{DATASET}`, `{TABLE}` are auto-replaced by
+`scripts/run_bq.py` — do not manually substitute them.
+
+---
+
+## 9. Examples: User Prompt to Execution
+
+### Example 1: "What's the error rate for my agents this week?"
+
+**Step 1: Dry-run the survey query**
+```bash
+python scripts/run_bq.py --dry-run "SELECT COUNT(*) AS total_events, COUNTIF(status = 'ERROR') AS errors, ROUND(COUNTIF(status = 'ERROR') / COUNT(*) * 100, 2) AS error_rate_pct, COUNT(DISTINCT session_id) AS sessions, COUNT(DISTINCT agent) AS agents FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)"
+```
+Output: `{"dry_run": true, "total_bytes_processed": 312475648, "human_readable": "298.00 MB", "exceeds_limit": false, "limit_gb": 1}`
+
+**Step 2: Execute the survey (under limit, proceed)**
+```bash
+python scripts/run_bq.py "SELECT COUNT(*) AS total_events, COUNTIF(status = 'ERROR') AS errors, ROUND(COUNTIF(status = 'ERROR') / COUNT(*) * 100, 2) AS error_rate_pct, COUNT(DISTINCT session_id) AS sessions, COUNT(DISTINCT agent) AS agents FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)"
+```
+Output: `{"total_events": 7234, "errors": 231, "error_rate_pct": 3.19, "sessions": 45, "agents": 12}`
+
+**Step 3: Present survey**
+> "7,234 events | 3.19% error rate | 45 sessions | 12 agents over the last 7 days"
+
+**Step 4: Filter — top 3 error contributors (dry-run then execute)**
+```bash
+python scripts/run_bq.py "WITH errors AS ( SELECT agent, event_type, error_message FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE status = 'ERROR' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) ) SELECT agent, COUNT(*) AS failures, ROUND(COUNT(*) / 231.0 * 100, 1) AS pct_of_errors FROM errors GROUP BY agent ORDER BY failures DESC LIMIT 3"
+```
+
+**Step 5: Present filter**
+
+| Agent | Failures | % of Errors |
+|-------|----------|------------|
+| search_agent | 142 | 61.5% |
+| code_gen_agent | 53 | 22.9% |
+| summary_agent | 21 | 9.1% |
+
+**Step 6: Deep dive into search_agent's representative failure**
+```bash
+python scripts/run_bq.py "SELECT timestamp, event_type, agent, content, error_message FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE agent = 'search_agent' AND status = 'ERROR' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) ORDER BY timestamp DESC LIMIT 1"
+```
+
+**Step 7: Interpret**
+> "This matches pattern: **tool failures on one tool_origin only**. 61.5% of all errors come from search_agent. Recommended next step: Check `tool_calls` CTE grouped by `tool_origin, tool_name` to confirm if it's a custom tool bug."
+
+---
+
+### Example 2: "Compare model performance over the last month"
+
+**Step 1: Dry-run**
+```bash
+python scripts/run_bq.py --dry-run "WITH llm_responses AS ( SELECT JSON_VALUE(attributes, '$.model') AS model_id, CAST(JSON_VALUE(attributes, '$.usage_metadata.total_tokens') AS INT64) AS total_tokens, CAST(JSON_VALUE(latency_ms, '$.total_ms') AS FLOAT64) AS total_latency_ms, CAST(JSON_VALUE(latency_ms, '$.time_to_first_token_ms') AS FLOAT64) AS ttft_ms, status FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE event_type = 'LLM_RESPONSE' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY) ) SELECT model_id, COUNT(*) AS calls, ROUND(COUNTIF(status='ERROR')/COUNT(*)*100,2) AS error_rate_pct, ROUND(AVG(total_tokens),0) AS avg_tokens, ROUND(AVG(total_latency_ms),0) AS avg_latency_ms, APPROX_QUANTILES(total_latency_ms,100)[OFFSET(95)] AS p95_latency_ms, ROUND(AVG(ttft_ms),0) AS avg_ttft_ms FROM llm_responses GROUP BY model_id ORDER BY avg_latency_ms DESC"
+```
+
+**Step 2: Execute and present as Markdown table sorted by latency descending** (visualization rule for model_comparison):
+
+| model_id | calls | error_rate | avg_tokens | avg_latency_ms | p95_latency_ms | avg_ttft_ms |
+|----------|-------|-----------|------------|---------------|---------------|-------------|
+| gemini-1.5-pro | 1,203 | 4.2% | 2,847 | 3,241 | 8,102 | 892 |
+| gemini-2.0-flash | 4,891 | 1.1% | 1,523 | 847 | 2,103 | 210 |
+| gemini-1.5-flash | 2,340 | 0.9% | 1,102 | 623 | 1,544 | 185 |
+
+**Step 3: Interpret**
+> "gemini-1.5-pro has 4x higher latency and 4x higher error rate than flash models. This matches pattern: **error_rate spikes on one model_id**. Recommended: compare error messages between pro and flash to check for prompt schema drift."
+
+---
+
+### Example 3: "Show me agent delegation flows for trace abc123"
+
+**Step 1: Dry-run**
+```bash
+python scripts/run_bq.py --dry-run "WITH agent_tree AS ( SELECT a.trace_id, a.agent AS child_agent, a.event_type AS child_event, a.timestamp, b.agent AS parent_agent FROM \`{PROJECT}.{DATASET}.{TABLE}\` a LEFT JOIN \`{PROJECT}.{DATASET}.{TABLE}\` b ON a.parent_span_id = b.span_id AND a.trace_id = b.trace_id WHERE a.trace_id = 'abc123' ) SELECT parent_agent, child_agent, child_event, timestamp FROM agent_tree WHERE parent_agent IS NOT NULL AND parent_agent != child_agent ORDER BY timestamp ASC"
+```
+
+**Step 2: Execute and render as Mermaid sequenceDiagram** (visualization rule for agent_tree):
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant OrchestratorAgent
+    participant SearchAgent
+    participant CodeGenAgent
+
+    User->>OrchestratorAgent: initial query
+    OrchestratorAgent->>SearchAgent: TOOL_STARTING (search_docs)
+    SearchAgent-->>OrchestratorAgent: TOOL_COMPLETED
+    OrchestratorAgent->>CodeGenAgent: TOOL_STARTING (generate_code)
+    CodeGenAgent-->>OrchestratorAgent: TOOL_COMPLETED
+    OrchestratorAgent-->>User: LLM_RESPONSE (final answer)
+```
+
+**Step 3: Interpret**
+> "Clean linear delegation: Orchestrator -> Search -> CodeGen. No loops detected. Total 3 agents involved in this trace."
