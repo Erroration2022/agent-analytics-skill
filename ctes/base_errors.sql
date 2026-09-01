@@ -1,5 +1,7 @@
 -- CTE: errors
--- Extracts all events with status = 'ERROR' along with their full context.
+-- Extracts error events using the canonical BQAA predicate (matches SDK
+-- event_semantics.ERROR_SQL_PREDICATE). Catches TOOL_ERROR / LLM_ERROR rows
+-- even when status = 'OK', plus rows with populated error_message.
 -- Use this CTE as a starting point for any error investigation.
 
 WITH errors AS (
@@ -17,6 +19,10 @@ WITH errors AS (
     latency_ms,
     error_message
   FROM `{PROJECT}.{DATASET}.{TABLE}`
-  WHERE status = 'ERROR'
+  WHERE (
+    ENDS_WITH(event_type, '_ERROR')
+    OR error_message IS NOT NULL
+    OR status = 'ERROR'
+  )
     AND timestamp BETWEEN @start AND @end
 )
