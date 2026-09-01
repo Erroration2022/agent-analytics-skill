@@ -12,8 +12,12 @@ WITH sessions AS (
     TIMESTAMP_DIFF(MAX(timestamp), MIN(timestamp), SECOND)      AS duration_sec,
     COUNT(*)                                                    AS total_events,
     COUNTIF(event_type = 'LLM_RESPONSE')                        AS llm_calls,
-    COUNTIF(event_type = 'TOOL_COMPLETED')                      AS tool_calls,
-    COUNTIF(status = 'ERROR')                                   AS error_count,
+    COUNTIF(event_type IN ('TOOL_COMPLETED', 'TOOL_ERROR'))     AS tool_calls,
+    COUNTIF(
+      ENDS_WITH(event_type, '_ERROR')
+      OR error_message IS NOT NULL
+      OR status = 'ERROR'
+    )                                                           AS error_count,
     COUNT(DISTINCT agent)                                       AS agents_involved,
     COUNT(DISTINCT invocation_id)                                AS invocation_count
   FROM `{PROJECT}.{DATASET}.{TABLE}`

@@ -1,25 +1,29 @@
 -- Tool Failure Rates
 -- Failure rate per tool, split by tool_origin (built-in vs custom).
--- Requires: base_tool_calls CTE.
+-- Counts terminal tool outcomes (TOOL_COMPLETED and TOOL_ERROR).
 
-WITH tool_calls AS (
+WITH tool_events AS (
   SELECT
     JSON_VALUE(content, '$.tool')        AS tool_name,
     JSON_VALUE(content, '$.tool_origin') AS tool_origin,
+    event_type,
     CAST(JSON_VALUE(latency_ms, '$.total_ms') AS FLOAT64) AS tool_latency_ms,
     status
   FROM `{PROJECT}.{DATASET}.{TABLE}`
-  WHERE event_type = 'TOOL_COMPLETED'
+  WHERE event_type IN ('TOOL_COMPLETED', 'TOOL_ERROR')
     AND timestamp BETWEEN @start AND @end
 )
 SELECT
   tool_name,
   tool_origin,
   COUNT(*)                                                     AS total_calls,
-  COUNTIF(status = 'ERROR')                                    AS failures,
-  ROUND(COUNTIF(status = 'ERROR') / COUNT(*) * 100, 2)         AS fail_rate_pct,
+  COUNTIF(event_type = 'TOOL_ERROR' OR status = 'ERROR')       AS failures,
+  ROUND(
+    COUNTIF(event_type = 'TOOL_ERROR' OR status = 'ERROR') / COUNT(*) * 100,
+    2
+  )                                                            AS fail_rate_pct,
   ROUND(AVG(tool_latency_ms), 0)                                AS avg_latency_ms,
   APPROX_QUANTILES(tool_latency_ms, 100)[OFFSET(95)]            AS p95_latency_ms
-FROM tool_calls
+FROM tool_events
 GROUP BY tool_name, tool_origin
 ORDER BY failures DESC;

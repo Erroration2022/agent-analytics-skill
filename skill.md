@@ -63,6 +63,7 @@ Single event-sourced table: `{PROJECT}.{DATASET}.{TABLE}`
 |----------------|-----------------|---------------------------------------------------------------|
 | timestamp      | TIMESTAMP       | UTC, microsecond precision                                    |
 | event_type     | STRING          | LLM_REQUEST, LLM_RESPONSE, TOOL_STARTING, TOOL_COMPLETED,    |
+|                |                 | TOOL_ERROR,                                                   |
 |                |                 | HITL_CREDENTIAL_REQUEST, HITL_CREDENTIAL_REQUEST_COMPLETED,   |
 |                |                 | HITL_CONFIRMATION_REQUEST, HITL_INPUT_REQUEST,                |
 |                |                 | HITL_INPUT_REQUEST_COMPLETED, STATE_DELTA                     |
@@ -90,6 +91,7 @@ Single event-sourced table: `{PROJECT}.{DATASET}.{TABLE}`
 | LLM_RESPONSE   | $.response (text)                                             |
 | TOOL_STARTING  | $.tool (name), $.args (object), $.tool_origin                 |
 | TOOL_COMPLETED | $.tool (name), $.result, $.tool_origin                        |
+| TOOL_ERROR     | $.tool (name), $.tool_origin (failure without completion)     |
 | HITL_*         | Human-in-the-loop credential/input/confirmation payloads      |
 | STATE_DELTA    | State changes tracked in attributes.state_delta               |
 
@@ -175,17 +177,20 @@ WITH tool_calls AS (
     JSON_VALUE(content, '$.tool_origin')                   AS tool_origin,
     JSON_VALUE(content, '$.result')                        AS tool_result,
     CAST(JSON_VALUE(latency_ms, '$.total_ms') AS FLOAT64)  AS tool_latency_ms,
+    event_type,
     status,
     error_message
   FROM `{PROJECT}.{DATASET}.{TABLE}`
-  WHERE event_type = 'TOOL_COMPLETED'
+  WHERE event_type IN ('TOOL_COMPLETED', 'TOOL_ERROR')
     AND timestamp BETWEEN @start AND @end
 )
 ```
 
 ### CTE: errors
 
-Use for: error investigation, failure root cause analysis.
+Use for: error investigation, failure root cause analysis. Matches the SDK
+canonical predicate (`ENDS_WITH(event_type, '_ERROR') OR error_message IS NOT
+NULL OR status = 'ERROR'`).
 
 ```sql
 WITH errors AS (
@@ -203,7 +208,11 @@ WITH errors AS (
     latency_ms,
     error_message
   FROM `{PROJECT}.{DATASET}.{TABLE}`
-  WHERE status = 'ERROR'
+  WHERE (
+    ENDS_WITH(event_type, '_ERROR')
+    OR error_message IS NOT NULL
+    OR status = 'ERROR'
+  )
     AND timestamp BETWEEN @start AND @end
 )
 ```
@@ -222,8 +231,12 @@ WITH sessions AS (
     TIMESTAMP_DIFF(MAX(timestamp), MIN(timestamp), SECOND)      AS duration_sec,
     COUNT(*)                                                    AS total_events,
     COUNTIF(event_type = 'LLM_RESPONSE')                        AS llm_calls,
-    COUNTIF(event_type = 'TOOL_COMPLETED')                      AS tool_calls,
-    COUNTIF(status = 'ERROR')                                   AS error_count,
+    COUNTIF(event_type IN ('TOOL_COMPLETED', 'TOOL_ERROR'))     AS tool_calls,
+    COUNTIF(
+      ENDS_WITH(event_type, '_ERROR')
+      OR error_message IS NOT NULL
+      OR status = 'ERROR'
+    )                                                           AS error_count,
     COUNT(DISTINCT agent)                                       AS agents_involved,
     COUNT(DISTINCT invocation_id)                                AS invocation_count
   FROM `{PROJECT}.{DATASET}.{TABLE}`
@@ -275,8 +288,19 @@ This grounds the analysis and prevents jumping to conclusions.
 ```sql
 SELECT
   COUNT(*)                                                        AS total_events,
-  COUNTIF(status = 'ERROR')                                       AS errors,
-  ROUND(COUNTIF(status = 'ERROR') / COUNT(*) * 100, 2)            AS error_rate_pct,
+  COUNTIF(
+    ENDS_WITH(event_type, '_ERROR')
+    OR error_message IS NOT NULL
+    OR status = 'ERROR'
+  )                                                               AS errors,
+  ROUND(
+    COUNTIF(
+      ENDS_WITH(event_type, '_ERROR')
+      OR error_message IS NOT NULL
+      OR status = 'ERROR'
+    ) / COUNT(*) * 100,
+    2
+  )                                                               AS error_rate_pct,
   COUNT(DISTINCT session_id)                                      AS sessions,
   COUNT(DISTINCT agent)                                           AS agents,
   COUNT(DISTINCT user_id)                                         AS users,
@@ -303,8 +327,19 @@ Isolate the top 3 contributors to the issue. Use the appropriate CTE:
 -- Example: top 3 error contributors
 SELECT agent, event_type,
   COUNT(*) AS total,
-  COUNTIF(status = 'ERROR') AS failures,
-  ROUND(COUNTIF(status = 'ERROR') / COUNT(*) * 100, 2) AS fail_rate_pct
+  COUNTIF(
+    ENDS_WITH(event_type, '_ERROR')
+    OR error_message IS NOT NULL
+    OR status = 'ERROR'
+  ) AS failures,
+  ROUND(
+    COUNTIF(
+      ENDS_WITH(event_type, '_ERROR')
+      OR error_message IS NOT NULL
+      OR status = 'ERROR'
+    ) / COUNT(*) * 100,
+    2
+  ) AS fail_rate_pct
 FROM `{PROJECT}.{DATASET}.{TABLE}`
 WHERE timestamp BETWEEN @start AND @end
 GROUP BY agent, event_type
@@ -428,13 +463,13 @@ Placeholders `{PROJECT}`, `{DATASET}`, `{TABLE}` are auto-replaced by
 
 **Step 1: Dry-run the survey query**
 ```bash
-python scripts/run_bq.py --dry-run "SELECT COUNT(*) AS total_events, COUNTIF(status = 'ERROR') AS errors, ROUND(COUNTIF(status = 'ERROR') / COUNT(*) * 100, 2) AS error_rate_pct, COUNT(DISTINCT session_id) AS sessions, COUNT(DISTINCT agent) AS agents FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)"
+python scripts/run_bq.py --dry-run "SELECT COUNT(*) AS total_events, COUNTIF(ENDS_WITH(event_type, '_ERROR') OR error_message IS NOT NULL OR status = 'ERROR') AS errors, ROUND(COUNTIF(ENDS_WITH(event_type, '_ERROR') OR error_message IS NOT NULL OR status = 'ERROR') / COUNT(*) * 100, 2) AS error_rate_pct, COUNT(DISTINCT session_id) AS sessions, COUNT(DISTINCT agent) AS agents FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)"
 ```
 Output: `{"dry_run": true, "total_bytes_processed": 312475648, "human_readable": "298.00 MB", "exceeds_limit": false, "limit_gb": 1}`
 
 **Step 2: Execute the survey (under limit, proceed)**
 ```bash
-python scripts/run_bq.py "SELECT COUNT(*) AS total_events, COUNTIF(status = 'ERROR') AS errors, ROUND(COUNTIF(status = 'ERROR') / COUNT(*) * 100, 2) AS error_rate_pct, COUNT(DISTINCT session_id) AS sessions, COUNT(DISTINCT agent) AS agents FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)"
+python scripts/run_bq.py "SELECT COUNT(*) AS total_events, COUNTIF(ENDS_WITH(event_type, '_ERROR') OR error_message IS NOT NULL OR status = 'ERROR') AS errors, ROUND(COUNTIF(ENDS_WITH(event_type, '_ERROR') OR error_message IS NOT NULL OR status = 'ERROR') / COUNT(*) * 100, 2) AS error_rate_pct, COUNT(DISTINCT session_id) AS sessions, COUNT(DISTINCT agent) AS agents FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY)"
 ```
 Output: `{"total_events": 7234, "errors": 231, "error_rate_pct": 3.19, "sessions": 45, "agents": 12}`
 
@@ -443,7 +478,7 @@ Output: `{"total_events": 7234, "errors": 231, "error_rate_pct": 3.19, "sessions
 
 **Step 4: Filter — top 3 error contributors (dry-run then execute)**
 ```bash
-python scripts/run_bq.py "WITH errors AS ( SELECT agent, event_type, error_message FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE status = 'ERROR' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) ) SELECT agent, COUNT(*) AS failures, ROUND(COUNT(*) / 231.0 * 100, 1) AS pct_of_errors FROM errors GROUP BY agent ORDER BY failures DESC LIMIT 3"
+python scripts/run_bq.py "WITH errors AS ( SELECT agent, event_type, error_message FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE (ENDS_WITH(event_type, '_ERROR') OR error_message IS NOT NULL OR status = 'ERROR') AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) ) SELECT agent, COUNT(*) AS failures, ROUND(COUNT(*) / 231.0 * 100, 1) AS pct_of_errors FROM errors GROUP BY agent ORDER BY failures DESC LIMIT 3"
 ```
 
 **Step 5: Present filter**
@@ -456,7 +491,7 @@ python scripts/run_bq.py "WITH errors AS ( SELECT agent, event_type, error_messa
 
 **Step 6: Deep dive into search_agent's representative failure**
 ```bash
-python scripts/run_bq.py "SELECT timestamp, event_type, agent, content, error_message FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE agent = 'search_agent' AND status = 'ERROR' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) ORDER BY timestamp DESC LIMIT 1"
+python scripts/run_bq.py "SELECT timestamp, event_type, agent, content, error_message FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE agent = 'search_agent' AND (ENDS_WITH(event_type, '_ERROR') OR error_message IS NOT NULL OR status = 'ERROR') AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) ORDER BY timestamp DESC LIMIT 1"
 ```
 
 **Step 7: Interpret**
