@@ -7,8 +7,18 @@ WITH llm_responses AS (
   SELECT
     session_id,
     JSON_VALUE(attributes, '$.model')                                        AS model_id,
-    CAST(JSON_VALUE(attributes, '$.usage_metadata.prompt_tokens')     AS INT64) AS prompt_tokens,
-    CAST(JSON_VALUE(attributes, '$.usage_metadata.completion_tokens') AS INT64) AS completion_tokens
+    CAST(COALESCE(
+      CAST(JSON_VALUE(attributes, '$.usage_metadata.prompt_token_count') AS INT64),
+      CAST(JSON_VALUE(attributes, '$.usage_metadata.prompt_tokens') AS INT64),
+      CAST(JSON_VALUE(content, '$.usage.prompt') AS INT64),
+      CAST(JSON_VALUE(attributes, '$.input_tokens') AS INT64)
+    ) AS INT64) AS prompt_tokens,
+    CAST(COALESCE(
+      CAST(JSON_VALUE(attributes, '$.usage_metadata.candidates_token_count') AS INT64),
+      CAST(JSON_VALUE(attributes, '$.usage_metadata.completion_tokens') AS INT64),
+      CAST(JSON_VALUE(content, '$.usage.completion') AS INT64),
+      CAST(JSON_VALUE(attributes, '$.output_tokens') AS INT64)
+    ) AS INT64) AS completion_tokens
   FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type = 'LLM_RESPONSE'
     AND timestamp BETWEEN @start AND @end
