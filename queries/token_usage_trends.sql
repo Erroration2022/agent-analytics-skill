@@ -6,7 +6,10 @@
 WITH llm_responses AS (
   SELECT
     DATE(timestamp)                                                          AS dt,
-    JSON_VALUE(attributes, '$.model')                                        AS model_id,
+    COALESCE(
+      JSON_VALUE(attributes, '$.model_version'),
+      JSON_VALUE(attributes, '$.model')
+    )                                                                          AS model_id,
     CAST(JSON_VALUE(attributes, '$.usage_metadata.prompt_tokens')     AS INT64) AS prompt_tokens,
     CAST(JSON_VALUE(attributes, '$.usage_metadata.completion_tokens') AS INT64) AS completion_tokens,
     CAST(JSON_VALUE(attributes, '$.usage_metadata.total_tokens')      AS INT64) AS total_tokens

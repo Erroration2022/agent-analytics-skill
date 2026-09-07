@@ -95,7 +95,8 @@ Single event-sourced table: `{PROJECT}.{DATASET}.{TABLE}`
 
 ### Attributes field (common nested paths)
 
-- `$.model` — model identifier (e.g., "gemini-2.0-flash")
+- `$.model` — model identifier on `LLM_REQUEST` events (e.g., "gemini-2.0-flash")
+- `$.model_version` — resolved model identifier on `LLM_RESPONSE` events (use `COALESCE(model_version, model)` when grouping response rows)
 - `$.usage_metadata.prompt_tokens` — input token count
 - `$.usage_metadata.completion_tokens` — output token count
 - `$.usage_metadata.total_tokens` — total token count
@@ -143,7 +144,10 @@ WITH llm_responses AS (
     span_id,
     parent_span_id,
     JSON_VALUE(content, '$.response')                                       AS response_text,
-    JSON_VALUE(attributes, '$.model')                                       AS model_id,
+    COALESCE(
+      JSON_VALUE(attributes, '$.model_version'),
+      JSON_VALUE(attributes, '$.model')
+    )                                                                         AS model_id,
     CAST(JSON_VALUE(attributes, '$.usage_metadata.prompt_tokens')      AS INT64)   AS prompt_tokens,
     CAST(JSON_VALUE(attributes, '$.usage_metadata.completion_tokens')  AS INT64)   AS completion_tokens,
     CAST(JSON_VALUE(attributes, '$.usage_metadata.total_tokens')       AS INT64)   AS total_tokens,
@@ -468,7 +472,7 @@ python scripts/run_bq.py "SELECT timestamp, event_type, agent, content, error_me
 
 **Step 1: Dry-run**
 ```bash
-python scripts/run_bq.py --dry-run "WITH llm_responses AS ( SELECT JSON_VALUE(attributes, '$.model') AS model_id, CAST(JSON_VALUE(attributes, '$.usage_metadata.total_tokens') AS INT64) AS total_tokens, CAST(JSON_VALUE(latency_ms, '$.total_ms') AS FLOAT64) AS total_latency_ms, CAST(JSON_VALUE(latency_ms, '$.time_to_first_token_ms') AS FLOAT64) AS ttft_ms, status FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE event_type = 'LLM_RESPONSE' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY) ) SELECT model_id, COUNT(*) AS calls, ROUND(COUNTIF(status='ERROR')/COUNT(*)*100,2) AS error_rate_pct, ROUND(AVG(total_tokens),0) AS avg_tokens, ROUND(AVG(total_latency_ms),0) AS avg_latency_ms, APPROX_QUANTILES(total_latency_ms,100)[OFFSET(95)] AS p95_latency_ms, ROUND(AVG(ttft_ms),0) AS avg_ttft_ms FROM llm_responses GROUP BY model_id ORDER BY avg_latency_ms DESC"
+python scripts/run_bq.py --dry-run "WITH llm_responses AS ( SELECT COALESCE(JSON_VALUE(attributes, '$.model_version'), JSON_VALUE(attributes, '$.model')) AS model_id, CAST(JSON_VALUE(attributes, '$.usage_metadata.total_tokens') AS INT64) AS total_tokens, CAST(JSON_VALUE(latency_ms, '$.total_ms') AS FLOAT64) AS total_latency_ms, CAST(JSON_VALUE(latency_ms, '$.time_to_first_token_ms') AS FLOAT64) AS ttft_ms, status FROM \`{PROJECT}.{DATASET}.{TABLE}\` WHERE event_type = 'LLM_RESPONSE' AND timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY) ) SELECT model_id, COUNT(*) AS calls, ROUND(COUNTIF(status='ERROR')/COUNT(*)*100,2) AS error_rate_pct, ROUND(AVG(total_tokens),0) AS avg_tokens, ROUND(AVG(total_latency_ms),0) AS avg_latency_ms, APPROX_QUANTILES(total_latency_ms,100)[OFFSET(95)] AS p95_latency_ms, ROUND(AVG(ttft_ms),0) AS avg_ttft_ms FROM llm_responses GROUP BY model_id ORDER BY avg_latency_ms DESC"
 ```
 
 **Step 2: Execute and present as Markdown table sorted by latency descending** (visualization rule for model_comparison):
