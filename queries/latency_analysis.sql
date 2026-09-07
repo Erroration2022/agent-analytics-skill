@@ -7,7 +7,10 @@
 WITH llm_responses AS (
   SELECT
     agent,
-    JSON_VALUE(attributes, '$.model')                                       AS model_id,
+    COALESCE(
+      JSON_VALUE(attributes, '$.model_version'),
+      JSON_VALUE(attributes, '$.model')
+    )                                                                         AS model_id,
     CAST(JSON_VALUE(latency_ms, '$.total_ms')              AS FLOAT64)      AS total_latency_ms,
     CAST(JSON_VALUE(latency_ms, '$.time_to_first_token_ms') AS FLOAT64)     AS ttft_ms
   FROM `{PROJECT}.{DATASET}.{TABLE}`

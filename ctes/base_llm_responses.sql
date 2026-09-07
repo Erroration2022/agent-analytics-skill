@@ -14,7 +14,10 @@ WITH llm_responses AS (
     span_id,
     parent_span_id,
     JSON_VALUE(content, '$.response')                                       AS response_text,
-    JSON_VALUE(attributes, '$.model')                                       AS model_id,
+    COALESCE(
+      JSON_VALUE(attributes, '$.model_version'),
+      JSON_VALUE(attributes, '$.model')
+    )                                                                         AS model_id,
     CAST(JSON_VALUE(attributes, '$.usage_metadata.prompt_tokens')      AS INT64)   AS prompt_tokens,
     CAST(JSON_VALUE(attributes, '$.usage_metadata.completion_tokens')  AS INT64)   AS completion_tokens,
     CAST(JSON_VALUE(attributes, '$.usage_metadata.total_tokens')       AS INT64)   AS total_tokens,
