@@ -10,7 +10,11 @@ WITH hitl_requests AS (
     invocation_id,
     trace_id,
     event_type,
-    timestamp AS request_time
+    timestamp AS request_time,
+    ROW_NUMBER() OVER (
+      PARTITION BY session_id, invocation_id, event_type
+      ORDER BY timestamp
+    ) AS request_seq
   FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type IN (
     'HITL_CREDENTIAL_REQUEST',
@@ -24,10 +28,15 @@ hitl_completions AS (
     session_id,
     invocation_id,
     event_type,
-    timestamp AS completion_time
+    timestamp AS completion_time,
+    ROW_NUMBER() OVER (
+      PARTITION BY session_id, invocation_id, event_type
+      ORDER BY timestamp
+    ) AS completion_seq
   FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type IN (
     'HITL_CREDENTIAL_REQUEST_COMPLETED',
+    'HITL_CONFIRMATION_REQUEST_COMPLETED',
     'HITL_INPUT_REQUEST_COMPLETED'
   )
   AND timestamp BETWEEN @start AND @end
@@ -43,5 +52,15 @@ FROM hitl_requests r
 LEFT JOIN hitl_completions c
   ON  r.session_id    = c.session_id
   AND r.invocation_id = c.invocation_id
+  AND r.request_seq   = c.completion_seq
+  AND (
+    (r.event_type = 'HITL_CREDENTIAL_REQUEST'
+      AND c.event_type = 'HITL_CREDENTIAL_REQUEST_COMPLETED')
+    OR (r.event_type = 'HITL_CONFIRMATION_REQUEST'
+      AND c.event_type = 'HITL_CONFIRMATION_REQUEST_COMPLETED')
+    OR (r.event_type = 'HITL_INPUT_REQUEST'
+      AND c.event_type = 'HITL_INPUT_REQUEST_COMPLETED')
+  )
+  AND c.completion_time >= r.request_time
 GROUP BY r.agent, r.event_type
 ORDER BY avg_wait_sec DESC;

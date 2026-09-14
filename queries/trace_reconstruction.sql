@@ -9,7 +9,11 @@ SELECT
   invocation_id,
   span_id,
   parent_span_id,
-  JSON_VALUE(content, '$.response')    AS llm_response,
+  COALESCE(
+    JSON_VALUE(content, '$.response'),
+    JSON_VALUE(content, '$.text_summary'),
+    JSON_VALUE(content, '$.text')
+  )                                    AS llm_response,
   JSON_VALUE(content, '$.tool')        AS tool_name,
   JSON_VALUE(content, '$.tool_origin') AS tool_origin,
   CAST(JSON_VALUE(latency_ms, '$.total_ms') AS FLOAT64) AS latency_ms,
