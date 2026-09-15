@@ -11,7 +11,7 @@ WITH llm_responses AS (
     CAST(JSON_VALUE(latency_ms, '$.total_ms')              AS FLOAT64)      AS total_latency_ms,
     CAST(JSON_VALUE(latency_ms, '$.time_to_first_token_ms') AS FLOAT64)     AS ttft_ms
   FROM `{PROJECT}.{DATASET}.{TABLE}`
-  WHERE event_type = 'LLM_RESPONSE'
+  WHERE event_type IN ('LLM_RESPONSE', 'LLM_ERROR')
     AND timestamp BETWEEN @start AND @end
 )
 SELECT
