@@ -11,7 +11,11 @@ WITH sessions AS (
     MAX(timestamp)                                              AS session_end,
     TIMESTAMP_DIFF(MAX(timestamp), MIN(timestamp), SECOND)      AS duration_sec,
     COUNT(*)                                                    AS total_events,
-    COUNTIF(event_type = 'LLM_RESPONSE')                        AS llm_calls,
+    COUNT(DISTINCT IF(
+      event_type = 'LLM_RESPONSE',
+      CONCAT(invocation_id, '|', COALESCE(span_id, '')),
+      NULL
+    ))                                                          AS llm_calls,
     COUNTIF(event_type = 'TOOL_COMPLETED')                      AS tool_calls,
     COUNTIF(status = 'ERROR')                                   AS error_count,
     COUNT(DISTINCT agent)                                       AS agents_involved,
