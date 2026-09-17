@@ -131,8 +131,12 @@ or more of the base CTEs below.
 
 Use for: token usage, latency, model analysis, cost estimation.
 
+**Streaming note:** In SSE streaming mode the ADK plugin logs one `LLM_RESPONSE`
+per chunk (shared `span_id`). Always deduplicate to the final chunk (latest
+`timestamp`) before aggregating calls, tokens, or latency.
+
 ```sql
-WITH llm_responses AS (
+WITH raw_llm_responses AS (
   SELECT
     timestamp,
     agent,
@@ -154,6 +158,19 @@ WITH llm_responses AS (
   FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type = 'LLM_RESPONSE'
     AND timestamp BETWEEN @start AND @end
+),
+llm_responses AS (
+  SELECT * EXCEPT(row_num)
+  FROM (
+    SELECT
+      *,
+      ROW_NUMBER() OVER (
+        PARTITION BY session_id, invocation_id, COALESCE(span_id, '')
+        ORDER BY timestamp DESC
+      ) AS row_num
+    FROM raw_llm_responses
+  )
+  WHERE row_num = 1
 )
 ```
 
@@ -221,7 +238,11 @@ WITH sessions AS (
     MAX(timestamp)                                              AS session_end,
     TIMESTAMP_DIFF(MAX(timestamp), MIN(timestamp), SECOND)      AS duration_sec,
     COUNT(*)                                                    AS total_events,
-    COUNTIF(event_type = 'LLM_RESPONSE')                        AS llm_calls,
+    COUNT(DISTINCT IF(
+      event_type = 'LLM_RESPONSE',
+      CONCAT(invocation_id, '|', COALESCE(span_id, '')),
+      NULL
+    ))                                                          AS llm_calls,
     COUNTIF(event_type = 'TOOL_COMPLETED')                      AS tool_calls,
     COUNTIF(status = 'ERROR')                                   AS error_count,
     COUNT(DISTINCT agent)                                       AS agents_involved,

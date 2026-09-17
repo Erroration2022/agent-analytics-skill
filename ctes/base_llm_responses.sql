@@ -1,9 +1,11 @@
 -- CTE: llm_responses
 -- Flattens LLM_RESPONSE events from the agent_events table.
--- Extracts token counts, latency, model info from nested JSON fields.
+-- Deduplicates streaming partial chunks: the ADK plugin logs one LLM_RESPONSE
+-- per streaming chunk (shared span_id); keep the final chunk (latest timestamp)
+-- which carries usage tokens and total latency.
 -- ALWAYS use this CTE for token usage, latency, and model analysis.
 
-WITH llm_responses AS (
+WITH raw_llm_responses AS (
   SELECT
     timestamp,
     agent,
@@ -25,4 +27,17 @@ WITH llm_responses AS (
   FROM `{PROJECT}.{DATASET}.{TABLE}`
   WHERE event_type = 'LLM_RESPONSE'
     AND timestamp BETWEEN @start AND @end
+),
+llm_responses AS (
+  SELECT * EXCEPT(row_num)
+  FROM (
+    SELECT
+      *,
+      ROW_NUMBER() OVER (
+        PARTITION BY session_id, invocation_id, COALESCE(span_id, '')
+        ORDER BY timestamp DESC
+      ) AS row_num
+    FROM raw_llm_responses
+  )
+  WHERE row_num = 1
 )
